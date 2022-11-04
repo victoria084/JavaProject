@@ -1,0 +1,247 @@
+package mailcampaign;
+import java.io.IOException;
+import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
+
+import org.apache.http.HttpHeaders;
+import org.apache.http.HttpHost;
+import org.apache.http.HttpResponse;
+import org.apache.http.HttpStatus;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.HttpRequestRetryHandler;
+import org.apache.http.client.ServiceUnavailableRetryStrategy;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.conn.routing.HttpRoute;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
+import org.apache.http.protocol.HttpContext;
+import org.apache.http.util.EntityUtils;
+import org.json.JSONObject;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+public class HttpClientTest
+{
+	// The root URL to connect to the API
+	private final String API_URL = "https://us18.api.mailchimp.com/3.0/";
+	
+	// The API key used in the Authorization HTTP header
+	private final String API_KEY = "d33df6827629f705f1417f28555d2ba0-us18";
+	
+	// Re-usable HttpClient
+	private HttpClient httpClient;
+	
+	/**
+	 * Configure a pooled HttpClient
+	 * Create a pool of re-useable HTTP client connections
+	 */
+	@BeforeEach
+	public void setup()
+	{
+		// Number of times to retry a connection if it fails 
+		int maxRetries = 3;
+		
+		PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
+		// Increase max total connection to 300
+		cm.setMaxTotal(100);
+		// Increase default max connection per route to 40
+		cm.setDefaultMaxPerRoute(40);
+		// Increase max connections for localhost:80 to 50
+		HttpHost localhost = new HttpHost("locahost", 80);
+		cm.setMaxPerRoute(new HttpRoute(localhost), 40);
+		
+		CloseableHttpClient httpClient = 
+				HttpClients.custom()
+				.setConnectionManager(cm)
+				.setRetryHandler(new HttpRequestRetryHandler() {
+		            @Override
+		            public boolean retryRequest(IOException exception, int executionCount, HttpContext context) {
+		                return executionCount <= maxRetries && exception instanceof SocketException;
+		            }
+		        })
+				.setServiceUnavailableRetryStrategy(new ServiceUnavailableRetryStrategy() {
+		            @Override
+		            public boolean retryRequest(HttpResponse response, int executionCount, HttpContext context) {
+		                return executionCount <= maxRetries && response.getStatusLine().getStatusCode() == HttpStatus.SC_SERVICE_UNAVAILABLE;
+		            }
+
+		            @Override
+		            public long getRetryInterval() {
+		                return 100;
+		            }
+		        })
+				.build();
+		
+		this.httpClient = httpClient;
+	}
+	
+	@Test
+	@DisplayName("Test pinging MailChimp API with API key")
+	public void testPing() throws Exception
+	{
+		// Create the HTTP GET request
+		HttpGet httpGet = new HttpGet(API_URL + "ping");
+		
+		// Add the Authorization header using the Mailchimp API key 
+		httpGet.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY);
+		
+		// Get the response from the MailChimp API
+		HttpResponse response = httpClient.execute(httpGet);
+		String result = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8.name());
+		
+		// Convert the response to JSON Object
+		JSONObject responseJson = new JSONObject(result);
+		
+		System.out.println("Response data from ping: " + responseJson.toString(4));
+	}
+	
+	@Test
+	@DisplayName("Test Apache HttpClient querying Lists on MailChimp ")
+	public void testQueryList() throws Exception
+	{
+		// Create the HTTP GET request
+		HttpGet httpGet = new HttpGet(API_URL + "lists");
+		
+		// Add the Authorization header using the Mailchimp API key 
+		httpGet.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY);
+		
+		// Get the response from the MailChimp API
+		HttpResponse response = httpClient.execute(httpGet);
+		String result = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8.name());
+		
+		// Convert the response to JSON Object
+		JSONObject responseJson = new JSONObject(result);
+				
+		System.out.println("Response data from List query: " + responseJson.toString(4));
+		
+		
+		String listId = null;
+		
+		// Get the List ID from the response data
+		if(responseJson.has("lists"))
+		{
+			// Get the first object from the lists array
+			JSONObject list = responseJson.optJSONArray("lists").optJSONObject(0);
+			if(list != null && list.has("id"))
+				listId = list.optString("id");
+		}
+		
+		System.out.println("List ID: " + listId);
+	}
+	
+	//@Test
+	@DisplayName("Test Adding email address to list")
+	public void testAddEmailToList() throws Exception
+	{
+		// List ID, hardcoded here. Should get from List query API
+		String listId = "aecb1da715";
+		
+		// Email address to add to list
+		String emailAddress = "victoria.345676@gmail.com";
+
+		
+		// Create the JSON payload to send to the Mailchimp API
+		JSONObject json = new JSONObject()
+				.put("list_id", listId)							// List ID (required)
+				.put("skip_merge_validation", true)				// (required)
+				.put("email_address", emailAddress)// Email address to add to list (required)
+				.put("status", "subscribed");					// (required)
+
+		
+		
+		System.out.println("JSON payload to send: " + json.toString(4));
+		
+		// Create the HTTP POST method with Mailchimp API URL
+		HttpPost httpPost = new HttpPost(API_URL + "lists/" + listId + "/members");
+		
+		
+		System.out.println("Send to: " + httpPost.getURI().toString());
+		
+		// Add the Authorization header using the Mailchimp API key 
+		httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY);
+		
+		// Set the Content-Type header to Application/json
+		httpPost.addHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType());
+		
+		HttpClientContext context = HttpClientContext.create();
+		
+				
+		// Set the JSON payload to the http request
+		httpPost.setEntity(new StringEntity(json.toString(), StandardCharsets.UTF_8.name()));
+		
+		
+		// Get the response from the MailChimp API
+		HttpResponse response = httpClient.execute(httpPost, context);
+		String result = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8.name());
+		
+		// Convert the response to JSON Object
+		JSONObject responseJson = new JSONObject(result);
+		
+		System.out.println("Response data: " + responseJson.toString(4));
+	}
+	
+	
+	@Disabled // Adding a new list doesn't work on free plan
+	@Test
+	@DisplayName("Test Apache HttpClient add new List to MailChimp")
+	public void testApacheHttpClient() throws Exception
+	{
+		// Create the JSON payload to send to the Mailchimp API
+		JSONObject json = new JSONObject()
+				.put("name", "Test List")						// List name (required)
+				.put("contact", new JSONObject()				// Contact details for list (required)
+						.put("company", "My company")
+						.put("address1", "1 My Street")
+						.put("city", "Taipei")
+						.put("state", "Taipei City")
+						.put("zip", "116")
+						.put("country", "Taiwan"))
+				.put("permission_reminder", "Junit")			// (required)
+				.put("campaign_defaults", new JSONObject()		// Default options for list (required)
+						.put("from_name", "Test Mailchimp user")
+						.put("from_email", "test@example.com")
+						.put("subject", "MailChimp Test")
+						.put("language", "en"))
+				.put("email_type_option", false);				// (required)
+				
+		
+		System.out.println("JSON payload to send: " + json.toString(4));
+		
+		// Create the HTTP POST method with Mailchimp API URL
+		HttpPost httpPost = new HttpPost(API_URL + "lists");
+		
+		
+		System.out.println("Send to: " + httpPost.getURI().toString());
+		
+		// Add the Authorization header using the Mailchimp API key 
+		httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY);
+		
+		// Set the Content-Type header to Application/json
+		httpPost.addHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType());
+		
+		HttpClientContext context = HttpClientContext.create();
+		
+				
+		// Set the JSON payload to the http request
+		httpPost.setEntity(new StringEntity(json.toString(), StandardCharsets.UTF_8.name()));
+		
+		
+		// Get the response from the MailChimp API
+		HttpResponse response = httpClient.execute(httpPost, context);
+		String result = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8.name());
+		
+		// Convert the response to JSON Object
+		JSONObject responseJson = new JSONObject(result);
+		
+		// Cannot create a list on Mailchimp free plan, returns error message
+		// See: https://stackoverflow.com/questions/56426392/mailchimp-api-3-0-status-403-user-does-not-have-access-to-the-requested-operat
+		System.out.println("Response data: " + responseJson.toString(4));
+	}
+}
